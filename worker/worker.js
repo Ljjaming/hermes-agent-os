@@ -309,6 +309,205 @@ function formatInspectionForPrompt(report) {
   return lines.join('\n');
 }
 
+// ---------- PDF Audit Renderer ----------
+// Renders the Auditor's text output as a branded, print-ready HTML deliverable.
+// Returns either the HTML directly (Content-Type: text/html) or wrapped in JSON.
+// Downstream pipeline: Make.com fetches this URL, converts to PDF via PDFShift
+// (or browser-native print), uploads to Google Drive, returns Drive URL.
+
+const AUDIT_HTML_TEMPLATE = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Revenue Leak Audit — {{CLIENT_NAME}}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  @page { size: A4; margin: 0.5in; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #ffffff;
+    color: #1a1620;
+    line-height: 1.65;
+    margin: 0;
+    padding: 56px 72px 40px;
+    max-width: 820px;
+    margin: 0 auto;
+    font-size: 11pt;
+  }
+  header.cover {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding-bottom: 24px;
+    margin-bottom: 32px;
+    border-bottom: 2px solid #1a1620;
+  }
+  .logo { width: 52px; height: 52px; flex-shrink: 0; }
+  h1 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 24pt;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    margin: 0 0 4px 0;
+    background: linear-gradient(120deg, #8b5cf6 0%, #ec4899 50%, #06b6d4 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    font-weight: 700;
+  }
+  .meta {
+    color: #6b6880;
+    font-size: 10pt;
+    margin: 0;
+  }
+  pre.audit-body {
+    font-family: 'Inter', sans-serif;
+    font-size: 10.5pt;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    margin: 0;
+    color: #1a1620;
+  }
+  .section-heading {
+    display: block;
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 14pt;
+    font-weight: 700;
+    color: #1a1620;
+    margin: 28px 0 10px 0;
+    padding-top: 18px;
+    padding-bottom: 4px;
+    border-top: 1px solid #e6e3ee;
+    letter-spacing: -0.01em;
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+  .section-heading .num {
+    background: linear-gradient(120deg, #8b5cf6 0%, #ec4899 50%, #06b6d4 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    font-weight: 700;
+    margin-right: 8px;
+  }
+  .review-flag {
+    display: inline-block;
+    background: #fef3c7;
+    color: #92400e;
+    padding: 1px 7px;
+    border-radius: 4px;
+    font-size: 9pt;
+    font-weight: 600;
+    margin-right: 4px;
+    letter-spacing: 0.04em;
+  }
+  .insufficient {
+    color: #92400e;
+    font-weight: 600;
+  }
+  .refund-block {
+    background: #faf9fc;
+    border: 1px solid #e6e3ee;
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin: 36px 0 16px 0;
+  }
+  .refund-block h3 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 12pt;
+    margin: 0 0 6px 0;
+    color: #1a1620;
+  }
+  .refund-block p {
+    margin: 4px 0;
+    font-size: 10pt;
+    color: #4a4760;
+  }
+  footer.audit-footer {
+    margin-top: 32px;
+    padding-top: 18px;
+    border-top: 1px solid #e6e3ee;
+    font-size: 9pt;
+    color: #6b6880;
+    line-height: 1.55;
+  }
+  footer.audit-footer p { margin: 3px 0; }
+  footer.audit-footer a { color: #8b5cf6; text-decoration: none; }
+  footer.audit-footer .stamp {
+    margin-top: 10px;
+    color: #b8b6c4;
+    font-size: 8.5pt;
+  }
+  @media print {
+    body { padding: 24px 36px; }
+    .section-heading { break-before: auto; break-after: avoid; }
+    .refund-block { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+  <header class="cover">
+    <svg viewBox="0 0 240 240" class="logo" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <linearGradient id="auditLogoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#8b5cf6"/>
+          <stop offset="50%" stop-color="#ec4899"/>
+          <stop offset="100%" stop-color="#06b6d4"/>
+        </linearGradient>
+      </defs>
+      <polygon points="120,18 224,204 16,204" fill="url(#auditLogoGrad)"/>
+      <polygon points="120,72 188,194 52,194" fill="#ffffff"/>
+      <polygon points="120,118 162,178 78,178" fill="url(#auditLogoGrad)"/>
+    </svg>
+    <div>
+      <h1>Revenue Leak Audit</h1>
+      <p class="meta">{{CLIENT_NAME}} &middot; Prepared by Justin Trent &middot; {{DATE}}</p>
+    </div>
+  </header>
+
+  <pre class="audit-body">{{AUDIT_BODY_HTML}}</pre>
+
+  <div class="refund-block">
+    <h3>Refund policy</h3>
+    <p>Any time. For any reason. No questions, no forms. Reply to my email saying "refund please" and I process it the same business day. There is no time limit.</p>
+  </div>
+
+  <footer class="audit-footer">
+    <p><strong>Justin Trent</strong> &middot; Clarity &amp; Resolution</p>
+    <p><a href="mailto:Ljjaming@gmail.com">Ljjaming@gmail.com</a> &middot; <a href="https://ljjaming.github.io/revenue-leak-audit">ljjaming.github.io/revenue-leak-audit</a></p>
+    <p class="stamp">Delivered {{DATE}} &middot; Revenue Leak Audit v1</p>
+  </footer>
+</body>
+</html>`;
+
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+function formatAuditBody(text) {
+  let html = escapeHtml(text);
+  // Wrap numbered section headers like "1. FIVE-GAP SCORECARD" in styled blocks
+  html = html.replace(/^(\d+)\.\s+([A-Z][A-Z0-9\s\-,&]+)$/gm,
+    '<span class="section-heading"><span class="num">$1.</span>$2</span>');
+  // Highlight [REVIEW] markers
+  html = html.replace(/\[REVIEW\]/g, '<span class="review-flag">REVIEW</span>');
+  // Highlight INSUFFICIENT DATA lines
+  html = html.replace(/(INSUFFICIENT DATA[^\n]*)/g, '<span class="insufficient">$1</span>');
+  return html;
+}
+
+function renderAuditHtml({ client_name, audit_text, date }) {
+  const d = date || new Date().toISOString().slice(0, 10);
+  return AUDIT_HTML_TEMPLATE
+    .replace(/\{\{CLIENT_NAME\}\}/g, escapeHtml(client_name || 'Client'))
+    .replace(/\{\{DATE\}\}/g, escapeHtml(d))
+    .replace(/\{\{AUDIT_BODY_HTML\}\}/g, formatAuditBody(audit_text || 'No audit content provided.'));
+}
+
 // ---------- LLM client ----------
 async function llmChat(env, systemPrompt, userContent) {
   const url = `${env.LLM_ENDPOINT.replace(/\/$/, '')}/chat/completions`;
@@ -516,6 +715,26 @@ HOOK (lead with this observation): ${hook}`;
     return { ok: true, draft, audit_id: auditId };
   },
 
+  'POST /render-audit': async (request, env) => {
+    const body = await request.json();
+    const { client_name, audit_text, date, format } = body;
+    if (!audit_text) throw new Error('audit_text is required');
+    const html = renderAuditHtml({ client_name, audit_text, date });
+
+    if (format === 'html' || format === 'html-response') {
+      return new Response(html, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    }
+
+    return { ok: true, html };
+  },
+
   'POST /classify-reply': async (request, env) => {
     const body = await request.json();
     const { prospect_id, conversation_id, reply_content } = body;
@@ -594,6 +813,8 @@ export default {
 
     try {
       const result = await handler(request, env);
+      // Allow handlers to return Response objects directly (e.g., HTML)
+      if (result instanceof Response) return result;
       return json(result);
     } catch (e) {
       console.error('Handler error', e);

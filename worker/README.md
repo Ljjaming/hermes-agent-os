@@ -12,6 +12,7 @@ The backend that lets agents run while your browser is closed. Make.com triggers
 | `/draft-outreach` | POST | Outreach produces an outreach message, writes to `Prospects.outreach_draft`, creates pending `ApprovalQueue` item. |
 | `/distill-transcript` | POST | Transcript Distiller: extracts objections, buying signals, commitments, self-reported leaks, contradictions as structured JSON. |
 | `/draft-audit` | POST | Auditor produces full audit deliverable, creates `Audits` row + `ApprovalQueue` item. Accepts `transcript` (raw) or `distilled_transcript` (structured). |
+| `/render-audit` | POST | Renders Auditor text output as branded HTML deliverable (light theme, A4-print-optimized). Returns HTML in JSON by default, or raw HTML if `format: "html"` is sent. Pipe through PDFShift or browser print, upload to Google Drive. |
 | `/classify-reply` | POST | Inbox classifies inbound reply, updates `Conversations` and `Prospects`, creates `ApprovalQueue` review item. |
 
 All POST endpoints require header `X-Hermes-Secret: <your-shared-secret>`.
