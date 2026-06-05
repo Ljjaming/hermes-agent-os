@@ -596,6 +596,170 @@ async function llmChat(env, systemPrompt, userContent) {
   return json.choices?.[0]?.message?.content?.trim() || '';
 }
 
+// ---------- Revenue Leak Scout (Google Places sourcing) ----------
+// Sources local businesses via Google Places API (New) and writes them to
+// Airtable as Discovery rows with approval_status='pending'. NO downstream
+// analysis or outreach is triggered. Promotion to approved is a manual
+// step Justin performs in Airtable.
+
+const METRO_BIAS = {
+  'tampa, fl':                  { lat: 27.9506, lng: -82.4572, radius: 35000 },
+  'tampa st petersburg, fl':    { lat: 27.9506, lng: -82.4572, radius: 40000 },
+  'tampa st. petersburg, fl':   { lat: 27.9506, lng: -82.4572, radius: 40000 },
+  'st petersburg, fl':          { lat: 27.7676, lng: -82.6403, radius: 25000 },
+  'scottsdale, az':             { lat: 33.4942, lng: -111.9261, radius: 25000 },
+  'austin, tx':                 { lat: 30.2672, lng: -97.7431, radius: 30000 },
+  'charlotte, nc':              { lat: 35.2271, lng: -80.8431, radius: 30000 },
+  'nashville, tn':              { lat: 36.1627, lng: -86.7816, radius: 30000 },
+  'miami, fl':                  { lat: 25.7617, lng: -80.1918, radius: 30000 },
+  'orlando, fl':                { lat: 28.5383, lng: -81.3792, radius: 30000 },
+};
+
+function getLocationBias(metro) {
+  const key = String(metro || '').toLowerCase().replace(/[^a-z0-9, .]/g, '').trim();
+  const match = METRO_BIAS[key];
+  if (!match) return null;
+  return {
+    circle: {
+      center: { latitude: match.lat, longitude: match.lng },
+      radius: match.radius,
+    },
+  };
+}
+
+async function searchGooglePlaces(env, { vertical, metro, maxResults, languageCode }) {
+  const apiKey = env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey) throw new Error('GOOGLE_PLACES_API_KEY required (https://console.cloud.google.com → APIs & Services → Credentials)');
+
+  const fieldMask = [
+    'places.id',
+    'places.displayName',
+    'places.formattedAddress',
+    'places.websiteUri',
+    'places.internationalPhoneNumber',
+    'places.nationalPhoneNumber',
+    'places.rating',
+    'places.userRatingCount',
+    'places.businessStatus',
+    'places.primaryType',
+    'places.googleMapsUri',
+    'nextPageToken',
+  ].join(',');
+
+  const url = 'https://places.googleapis.com/v1/places:searchText';
+  const locationBias = getLocationBias(metro);
+  const textQuery = `${vertical} ${metro}`.trim();
+
+  const all = [];
+  let pageToken = null;
+  let safety = 0;
+
+  while (all.length < maxResults && safety < 5) {
+    safety++;
+    const body = {
+      textQuery,
+      maxResultCount: Math.min(20, maxResults - all.length),
+      languageCode: languageCode || 'en',
+    };
+    if (locationBias) body.locationBias = locationBias;
+    if (pageToken) body.pageToken = pageToken;
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': fieldMask,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Google Places ${res.status}: ${text.slice(0, 300)}`);
+    }
+
+    const json = await res.json();
+    if (Array.isArray(json.places)) all.push(...json.places);
+    pageToken = json.nextPageToken;
+    if (!pageToken) break;
+  }
+
+  return all.slice(0, maxResults);
+}
+
+async function getExistingDedupKeys(env) {
+  // Fetch all prospects to dedup against. Returns sets of place_id and website_url.
+  const placeIds = new Set();
+  const websites = new Set();
+  let offset = null;
+  let safety = 0;
+  const fields = 'fields%5B%5D=place_id&fields%5B%5D=website_url';
+  const baseUrl = `https://api.airtable.com/v0/${env.AIRTABLE_BASE_ID}/Prospects?${fields}&pageSize=100`;
+
+  while (safety < 50) {
+    safety++;
+    const full = offset ? `${baseUrl}&offset=${encodeURIComponent(offset)}` : baseUrl;
+    const res = await fetch(full, {
+      headers: { Authorization: `Bearer ${env.AIRTABLE_TOKEN}` },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Airtable list failed ${res.status}: ${text.slice(0, 300)}`);
+    }
+    const json = await res.json();
+    for (const rec of (json.records || [])) {
+      const pid = rec.fields?.place_id;
+      const url = rec.fields?.website_url;
+      if (pid) placeIds.add(String(pid).trim());
+      if (url) websites.add(String(url).trim().toLowerCase().replace(/\/$/, ''));
+    }
+    if (!json.offset) break;
+    offset = json.offset;
+  }
+  return { placeIds, websites };
+}
+
+function placeToProspectFields(place, { vertical, metro }) {
+  const name = place.displayName?.text || place.displayName || 'Unknown';
+  const websiteUrl = place.websiteUri || '';
+  const phone = place.internationalPhoneNumber || place.nationalPhoneNumber || '';
+  const fields = {
+    business_name: name,
+    website_url: websiteUrl,
+    sector: vertical,
+    discovery_source: `google_places_${metro.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')}`,
+    stage: 'discovery',
+    approval_status: 'pending',
+    place_id: place.id || '',
+    address: place.formattedAddress || '',
+    phone,
+    rating: typeof place.rating === 'number' ? place.rating : null,
+    review_count: typeof place.userRatingCount === 'number' ? place.userRatingCount : null,
+    business_status: place.businessStatus || '',
+    google_maps_url: place.googleMapsUri || '',
+  };
+  // Strip null/empty to avoid Airtable typecast quirks on optional numerics
+  for (const k of Object.keys(fields)) {
+    if (fields[k] === null || fields[k] === undefined) delete fields[k];
+  }
+  return fields;
+}
+
+async function batchCreateProspects(env, fieldsArray) {
+  if (!fieldsArray.length) return [];
+  const created = [];
+  for (let i = 0; i < fieldsArray.length; i += 10) {
+    const batch = fieldsArray.slice(i, i + 10);
+    const result = await airtableRequest(env, 'POST', '/Prospects', {
+      records: batch.map((fields) => ({ fields })),
+      typecast: true,
+    });
+    if (Array.isArray(result.records)) created.push(...result.records);
+  }
+  return created;
+}
+
 // ---------- Screenshot capture adapter ----------
 // Captures a screenshot from a URL. Pluggable provider:
 //   - "screenshotone" (default): https://screenshotone.com, 100/mo free tier
@@ -847,6 +1011,70 @@ async function writeAnalysisToProspect(env, prospect_id, analysis, headerPrefix)
 // ---------- Routes ----------
 const routes = {
   'GET /health': async () => ({ ok: true, runtime: 'hermes-agent-runtime', time: new Date().toISOString() }),
+
+  'POST /source-prospects': async (request, env) => {
+    const body = await request.json();
+    const { vertical, metro, max_results = 20, language_code = 'en' } = body;
+
+    if (!vertical || typeof vertical !== 'string') throw new Error('vertical is required (string)');
+    if (!metro || typeof metro !== 'string') throw new Error('metro is required (string)');
+    const cap = Math.min(Math.max(parseInt(max_results, 10) || 20, 1), 60);
+
+    // 1. Query Google Places
+    const places = await searchGooglePlaces(env, {
+      vertical: vertical.trim(),
+      metro: metro.trim(),
+      maxResults: cap,
+      languageCode: language_code,
+    });
+
+    // 2. Build dedup index from existing Airtable rows
+    const { placeIds, websites } = await getExistingDedupKeys(env);
+
+    // 3. Filter
+    const fresh = [];
+    const skipped = [];
+    for (const p of places) {
+      const pid = String(p.id || '').trim();
+      const url = String(p.websiteUri || '').trim().toLowerCase().replace(/\/$/, '');
+      if (pid && placeIds.has(pid)) { skipped.push({ name: p.displayName?.text || p.id, reason: 'duplicate_place_id' }); continue; }
+      if (url && websites.has(url)) { skipped.push({ name: p.displayName?.text || p.id, reason: 'duplicate_website' }); continue; }
+      fresh.push(p);
+    }
+
+    // 4. Skip businesses Google flagged as closed
+    const operational = fresh.filter((p) => !p.businessStatus || p.businessStatus === 'OPERATIONAL');
+    const closedCount = fresh.length - operational.length;
+
+    // 5. Map to Airtable fields and batch-create
+    const fieldsArray = operational.map((p) => placeToProspectFields(p, { vertical: vertical.trim(), metro: metro.trim() }));
+    const createdRecords = await batchCreateProspects(env, fieldsArray);
+
+    // 6. Strict JSON summary
+    return {
+      ok: true,
+      requested: {
+        vertical: vertical.trim(),
+        metro: metro.trim(),
+        max_results: cap,
+      },
+      fetched: places.length,
+      duplicates_skipped: skipped.length,
+      closed_skipped: closedCount,
+      created: createdRecords.length,
+      approval_required: true,
+      next_step: "Review new rows in Airtable Prospects 'Discovery Pending' view. Set approval_status='approved' to trigger analysis. Set approval_status='killed' to archive.",
+      prospects: createdRecords.map((r) => ({
+        id: r.id,
+        business_name: r.fields?.business_name || '',
+        website_url: r.fields?.website_url || '',
+        place_id: r.fields?.place_id || '',
+        address: r.fields?.address || '',
+        rating: r.fields?.rating ?? null,
+        review_count: r.fields?.review_count ?? null,
+      })),
+    };
+  },
 
   'POST /inspect-site': async (request) => {
     const { url } = await request.json();

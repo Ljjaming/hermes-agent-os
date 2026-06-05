@@ -7,6 +7,7 @@ The backend that lets agents run while your browser is closed. Make.com triggers
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/health` | GET | Heartbeat. No auth required. |
+| `/source-prospects` | POST | Revenue Leak Scout: queries Google Places API for {vertical, metro}, dedupes against Airtable by place_id + website_url, batch-creates Discovery rows with `approval_status='pending'`. Does NOT trigger downstream analysis or outreach. Requires manual approval. |
 | `/inspect-site` | POST | Site Inspector: fetches URL, returns tech stack + CTAs + pricing + booking flow + trust signals + leak candidates. |
 | `/draft-hook` | POST | Diagnostician produces a one-sentence Hook for a prospect, writes to `Prospects.hook`. Auto-inspects site if `website_url` given without `public_notes`. |
 | `/screenshot-capture` | POST | Captures a screenshot from a URL via configured provider (ScreenshotOne default). Returns base64 PNG. |
@@ -61,6 +62,11 @@ wrangler secret put SHARED_SECRET
 
 # Required for /screenshot-capture and /analyze-from-url. Sign up at https://screenshotone.com (100/mo free).
 # wrangler secret put SCREENSHOT_API_KEY
+
+# Required for /source-prospects. Create in Google Cloud Console
+# (https://console.cloud.google.com → APIs & Services → Credentials).
+# Enable "Places API (New)" first. $200/mo free credit covers ~10k+ Pro lookups.
+# wrangler secret put GOOGLE_PLACES_API_KEY
 ```
 
 ### 4. Deploy

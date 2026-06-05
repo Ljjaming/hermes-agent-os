@@ -30,6 +30,7 @@ SCREENSHOT_PROVIDER = "screenshotone"
 #   wrangler secret put SHARED_SECRET
 #   wrangler secret put VISION_API_KEY        # optional; defaults to LLM_API_KEY if unset
 #   wrangler secret put SCREENSHOT_API_KEY    # required for /screenshot-capture and /analyze-from-url
+#   wrangler secret put GOOGLE_PLACES_API_KEY # required for /source-prospects
 #
 # Or via the Cloudflare dashboard:
 #   Workers & Pages → hermes-agent-runtime → Settings → Variables → Encrypted
