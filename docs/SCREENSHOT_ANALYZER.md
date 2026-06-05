@@ -4,9 +4,87 @@ Vision-based skill that turns a screenshot of a prospect's website into a struct
 
 Sits between Site Inspector (technical fingerprint) and Transcript Distiller (conversation insight) in the evidence pipeline.
 
-## Endpoint
+## Three endpoints
 
-`POST /analyze-screenshot`
+| Endpoint | When to use |
+|---|---|
+| `/screenshot-capture` | You only need the screenshot bytes (e.g., for archival, manual review) |
+| `/analyze-screenshot` | You already have a screenshot URL or base64 and want it analyzed |
+| `/analyze-from-url` | URL-only input. Captures and analyzes in one call. **The lethal one.** |
+
+## Endpoint: `/screenshot-capture`
+
+Captures a screenshot of a URL via configured provider. Returns base64 PNG.
+
+### Request
+
+```json
+{
+  "url": "https://acmemed.com",
+  "full_page": false,
+  "viewport_width": 1280,
+  "viewport_height": 800,
+  "device_scale_factor": 1
+}
+```
+
+| Field | Required | Default | Notes |
+|---|---|---|---|
+| `url` | yes | — | URL to capture |
+| `full_page` | no | false | Capture full scrollable page or just viewport |
+| `viewport_width` | no | 1280 | Desktop default; use 375 for mobile |
+| `viewport_height` | no | 800 | Use 812 for iPhone-style |
+| `device_scale_factor` | no | 1 | Use 2 for retina |
+
+### Response
+
+```json
+{
+  "ok": true,
+  "image_base64": "iVBORw0KGgoAAAANSUhEUgAA...",
+  "content_type": "image/png",
+  "captured_at": "2026-06-05T12:30:00.000Z",
+  "provider": "screenshotone",
+  "bytes": 245678
+}
+```
+
+## Endpoint: `/analyze-from-url`
+
+URL-only input. Captures and analyzes in one call. **Use this for new prospects.**
+
+### Request
+
+```json
+{
+  "url": "https://acmemed.com",
+  "prospect_id": "recXXXXX",
+  "business_name": "Acme Med Spa",
+  "writeback": true,
+  "full_page": false,
+  "viewport_width": 1280,
+  "viewport_height": 800
+}
+```
+
+### Response
+
+```json
+{
+  "ok": true,
+  "capture": {
+    "captured_at": "2026-06-05T12:30:00.000Z",
+    "provider": "screenshotone",
+    "bytes": 245678,
+    "content_type": "image/png"
+  },
+  "analysis": { /* same shape as /analyze-screenshot output */ }
+}
+```
+
+(The base64 image is NOT included in the response to keep payloads small. Use `/screenshot-capture` separately if you need the bytes.)
+
+## Endpoint: `/analyze-screenshot`
 
 Headers: `X-Hermes-Secret: <SHARED_SECRET>`
 
@@ -172,30 +250,92 @@ curl -X POST https://<DOMAIN>.workers.dev/draft-outreach `
 # (no change to existing behavior, screenshot_analysis is purely additive)
 ```
 
-## Real-world usage flow
+## Real-world usage flow (URL-only, automated)
 
-The fastest path from prospect identification to sharper outreach:
+After `/analyze-from-url` is wired, the fastest path is:
 
-1. Use any screenshot tool (Cmd+Shift+4 on Mac, Snipping Tool on Windows, or a service like ScreenshotOne) to capture the prospect's homepage. Save to a public URL or as base64.
-2. POST to `/analyze-screenshot` with `business_name`, `website_url`, `screenshot_url`.
-3. Take the returned `one_sentence_hook` and POST to `/draft-outreach` with `screenshot_analysis` as the full returned `analysis` object.
-4. Review the draft in Hermes Agent OS Queue. Approve. Send.
+1. Add a Prospect row in Airtable with `website_url` filled.
+2. Make.com triggers on new row.
+3. Single HTTP call: `POST /analyze-from-url` with `{url, prospect_id, business_name, writeback: true}`.
+4. Make.com forwards the analysis to `POST /draft-outreach` as `screenshot_analysis`.
+5. Outreach draft lands in your Queue.
 
-Total time per prospect: ~90 seconds of human input. The agents handle the structured-thinking work.
+Total human input: just the prospect URL. The pipeline does the rest.
 
-## Make.com scenario sketch (Phase 2)
+## Make.com scenario: "Auto-outreach from URL"
 
 ```
-Trigger: new row in Airtable Prospects with screenshot_url filled
+Trigger: new Airtable Prospects row, website_url filled, stage="discovery"
   ↓
-HTTP: POST /analyze-screenshot {prospect_id, business_name, website_url, screenshot_url, writeback: true}
+HTTP: POST /analyze-from-url {url, prospect_id, business_name, writeback: true}
   ↓
-HTTP: POST /draft-hook {prospect_id, business_name, website_url, public_notes: <best_outreach_angle from analysis>}
+HTTP: POST /draft-outreach {prospect_id, business_name, screenshot_analysis: <analysis from step 2>}
   ↓
-HTTP: POST /draft-outreach {prospect_id, business_name, hook, screenshot_analysis: <full analysis>}
+(Draft lives in ApprovalQueue. You approve in Hermes Agent OS Queue.)
   ↓
-(Outreach draft now lives in ApprovalQueue, you approve in Hermes Agent OS)
+On approval: Make.com sends via Instantly + logs Conversation.
 ```
+
+Total Make.com modules: 4. Ops per prospect: ~6. At Phase 1 volume (50 prospects/week), ~1,200 ops/month, comfortably under Core plan limit.
+
+## Screenshot capture provider configuration
+
+Set in `wrangler.toml`:
+
+```toml
+[vars]
+SCREENSHOT_PROVIDER = "screenshotone"
+```
+
+Set the API key as a secret:
+
+```powershell
+wrangler secret put SCREENSHOT_API_KEY
+```
+
+### Supported providers
+
+| Provider | Free tier | Paid | Setup |
+|---|---|---|---|
+| **screenshotone** (default) | 100/mo | $17/mo for 1,000 | Sign up at screenshotone.com, copy access key |
+| **urlbox** | 100/mo | $13/mo for 1,500 | Sign up at urlbox.com, copy API key |
+| **cf-browser** | Workers Paid only | $5/mo Workers Paid for ~600/day capacity | TODO, see "Cloudflare Browser Rendering upgrade" below |
+
+### Cloudflare Browser Rendering upgrade (when volume hits ~150/mo)
+
+For higher volume at fixed cost ($5/mo flat), switch to Cloudflare Browser Rendering. Setup:
+
+1. **Upgrade to Workers Paid** ($5/mo) in Cloudflare dashboard
+2. **Install puppeteer**: `cd worker && npm install @cloudflare/puppeteer`
+3. **Add binding to wrangler.toml**:
+   ```toml
+   [[browser]]
+   binding = "BROWSER"
+   ```
+4. **Set provider**: `SCREENSHOT_PROVIDER = "cf-browser"`
+5. **Implement** the `cf-browser` branch in `captureScreenshot()`:
+   ```js
+   import puppeteer from "@cloudflare/puppeteer";
+
+   async function captureCloudflareBrowser(env, opts) {
+     const browser = await puppeteer.launch(env.BROWSER);
+     const page = await browser.newPage();
+     await page.setViewport({ width: opts.viewportWidth, height: opts.viewportHeight });
+     await page.goto(opts.url, { waitUntil: 'networkidle0', timeout: 20000 });
+     const buffer = await page.screenshot({ type: 'png', fullPage: opts.fullPage });
+     await browser.close();
+     return {
+       image_base64: bufferToBase64(buffer.buffer),
+       content_type: 'image/png',
+       captured_at: new Date().toISOString(),
+       provider: 'cf-browser',
+       bytes: buffer.byteLength,
+     };
+   }
+   ```
+6. **Deploy**: `wrangler deploy`
+
+Worth doing once you're past 80-100 screenshots/month and want one less SaaS.
 
 ## Limitations
 

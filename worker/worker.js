@@ -596,6 +596,106 @@ async function llmChat(env, systemPrompt, userContent) {
   return json.choices?.[0]?.message?.content?.trim() || '';
 }
 
+// ---------- Screenshot capture adapter ----------
+// Captures a screenshot from a URL. Pluggable provider:
+//   - "screenshotone" (default): https://screenshotone.com, 100/mo free tier
+//   - "urlbox": https://urlbox.com, similar API, generous free tier
+//   - "cloudflare-browser-rendering": TODO, requires Workers Paid + @cloudflare/puppeteer binding
+//
+// Returns { image_base64, content_type, captured_at, provider, bytes }.
+// Does not currently cache to R2/KV. Re-capturing the same URL costs another credit.
+
+function bufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function captureScreenshot(env, { url, fullPage = false, viewportWidth = 1280, viewportHeight = 800, deviceScaleFactor = 1 }) {
+  const provider = (env.SCREENSHOT_PROVIDER || 'screenshotone').toLowerCase();
+
+  if (provider === 'screenshotone') {
+    return captureScreenshotOne(env, { url, fullPage, viewportWidth, viewportHeight, deviceScaleFactor });
+  } else if (provider === 'urlbox') {
+    return captureUrlbox(env, { url, fullPage, viewportWidth, viewportHeight });
+  } else if (provider === 'cloudflare-browser-rendering' || provider === 'cf-browser') {
+    throw new Error('Cloudflare Browser Rendering not yet wired. Requires Workers Paid + @cloudflare/puppeteer binding. See docs/SCREENSHOT_ANALYZER.md for setup.');
+  } else {
+    throw new Error(`Unknown SCREENSHOT_PROVIDER: ${provider}`);
+  }
+}
+
+async function captureScreenshotOne(env, { url, fullPage, viewportWidth, viewportHeight, deviceScaleFactor }) {
+  const apiKey = env.SCREENSHOT_API_KEY;
+  if (!apiKey) throw new Error('SCREENSHOT_API_KEY required for screenshotone provider (sign up at https://screenshotone.com)');
+
+  const params = new URLSearchParams({
+    access_key: apiKey,
+    url: url,
+    format: 'png',
+    full_page: String(fullPage),
+    viewport_width: String(viewportWidth),
+    viewport_height: String(viewportHeight),
+    device_scale_factor: String(deviceScaleFactor),
+    block_ads: 'true',
+    block_cookie_banners: 'true',
+    block_trackers: 'true',
+    cache: 'true',
+    cache_ttl: '86400',
+    wait_until: 'networkidle0',
+    response_type: 'by_format',
+  });
+
+  const res = await fetch(`https://api.screenshotone.com/take?${params.toString()}`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`ScreenshotOne ${res.status}: ${text.slice(0, 300)}`);
+  }
+
+  const buffer = await res.arrayBuffer();
+  return {
+    image_base64: bufferToBase64(buffer),
+    content_type: res.headers.get('content-type') || 'image/png',
+    captured_at: new Date().toISOString(),
+    provider: 'screenshotone',
+    bytes: buffer.byteLength,
+  };
+}
+
+async function captureUrlbox(env, { url, fullPage, viewportWidth, viewportHeight }) {
+  const apiKey = env.SCREENSHOT_API_KEY;
+  if (!apiKey) throw new Error('SCREENSHOT_API_KEY required for urlbox provider (sign up at https://urlbox.com)');
+
+  const params = new URLSearchParams({
+    url,
+    format: 'png',
+    full_page: String(fullPage),
+    width: String(viewportWidth),
+    height: String(viewportHeight),
+    block_ads: 'true',
+    hide_cookie_banners: 'true',
+  });
+
+  const res = await fetch(`https://api.urlbox.com/v1/${apiKey}/png?${params.toString()}`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Urlbox ${res.status}: ${text.slice(0, 300)}`);
+  }
+
+  const buffer = await res.arrayBuffer();
+  return {
+    image_base64: bufferToBase64(buffer),
+    content_type: res.headers.get('content-type') || 'image/png',
+    captured_at: new Date().toISOString(),
+    provider: 'urlbox',
+    bytes: buffer.byteLength,
+  };
+}
+
 // ---------- Vision adapter ----------
 // Clean adapter for vision-capable models (OpenAI-compatible chat completions with image_url).
 // Defaults to VISION_* env vars, falls back to LLM_* if vision is unset.
@@ -682,6 +782,68 @@ const at = {
     airtableRequest(env, 'GET', `/Prospects/${id}`),
 };
 
+// ---------- Screenshot Analyzer helpers ----------
+async function analyzeScreenshotInternal(env, { imageUrl, imageBase64, business_name, website_url }) {
+  const userPrompt = `BUSINESS_NAME: ${business_name || 'unknown'}
+WEBSITE_URL: ${website_url || 'unknown'}
+
+Analyze the attached screenshot and produce the structured JSON described in your system prompt. Quote what you literally see. Do not invent details outside the image.`;
+
+  const raw = await analyzeImage(env, {
+    imageUrl,
+    imageBase64,
+    prompt: userPrompt,
+    systemPrompt: AGENT_PROMPTS.screenshot_analyzer,
+  });
+
+  let parsed;
+  try {
+    const match = raw.match(/\{[\s\S]*\}/);
+    parsed = JSON.parse(match ? match[0] : raw);
+  } catch {
+    parsed = {
+      business_name: business_name || '',
+      website_url: website_url || '',
+      overall_leak_score: 0,
+      visual_summary: '',
+      visible_leaks: [],
+      best_outreach_angle: '',
+      one_sentence_hook: '',
+      loom_talking_points: [],
+      audit_relevance: '',
+      needs_human_review: true,
+      error: 'parse_failure',
+      raw_preview: raw.slice(0, 300),
+    };
+  }
+
+  // Echo input values if the model omitted them
+  if (!parsed.business_name && business_name) parsed.business_name = business_name;
+  if (!parsed.website_url && website_url) parsed.website_url = website_url;
+
+  return parsed;
+}
+
+async function writeAnalysisToProspect(env, prospect_id, analysis, headerPrefix) {
+  try {
+    const lines = [];
+    lines.push(`${headerPrefix} ${new Date().toISOString()}]`);
+    lines.push(`Overall leak score: ${analysis.overall_leak_score}/5`);
+    if (analysis.one_sentence_hook) lines.push(`Hook: ${analysis.one_sentence_hook}`);
+    if (analysis.best_outreach_angle) lines.push(`Outreach angle: ${analysis.best_outreach_angle}`);
+    if (Array.isArray(analysis.visible_leaks) && analysis.visible_leaks.length) {
+      lines.push(`\nVisible leaks (${analysis.visible_leaks.length}):`);
+      for (const l of analysis.visible_leaks) {
+        lines.push(`  - [${l.category} s${l.severity}] ${l.leak}`);
+      }
+    }
+    lines.push(`\n--- Full analysis ---\n${JSON.stringify(analysis, null, 2)}`);
+    await at.updateProspect(env, prospect_id, { notes: lines.join('\n') });
+  } catch (e) {
+    console.error('Analysis writeback failed', e);
+  }
+}
+
 // ---------- Routes ----------
 const routes = {
   'GET /health': async () => ({ ok: true, runtime: 'hermes-agent-runtime', time: new Date().toISOString() }),
@@ -726,6 +888,22 @@ ${public_notes || 'none provided'}`;
     return { ok: true, hook, inspection_used };
   },
 
+  'POST /screenshot-capture': async (request, env) => {
+    const body = await request.json();
+    const { url, full_page, viewport_width, viewport_height, device_scale_factor } = body;
+    if (!url) throw new Error('url is required');
+
+    const capture = await captureScreenshot(env, {
+      url,
+      fullPage: full_page === true,
+      viewportWidth: viewport_width || 1280,
+      viewportHeight: viewport_height || 800,
+      deviceScaleFactor: device_scale_factor || 1,
+    });
+
+    return { ok: true, ...capture };
+  },
+
   'POST /analyze-screenshot': async (request, env) => {
     const body = await request.json();
     const { prospect_id, business_name, website_url, screenshot_url, image_base64, writeback } = body;
@@ -734,64 +912,54 @@ ${public_notes || 'none provided'}`;
       throw new Error('screenshot_url or image_base64 is required');
     }
 
-    const userPrompt = `BUSINESS_NAME: ${business_name || 'unknown'}
-WEBSITE_URL: ${website_url || 'unknown'}
-
-Analyze the attached screenshot and produce the structured JSON described in your system prompt. Quote what you literally see. Do not invent details outside the image.`;
-
-    const raw = await analyzeImage(env, {
+    const analysis = await analyzeScreenshotInternal(env, {
       imageUrl: screenshot_url,
       imageBase64: image_base64,
-      prompt: userPrompt,
-      systemPrompt: AGENT_PROMPTS.screenshot_analyzer,
+      business_name,
+      website_url,
     });
 
-    let parsed;
-    try {
-      const match = raw.match(/\{[\s\S]*\}/);
-      parsed = JSON.parse(match ? match[0] : raw);
-    } catch {
-      parsed = {
-        business_name: business_name || '',
-        website_url: website_url || '',
-        overall_leak_score: 0,
-        visual_summary: '',
-        visible_leaks: [],
-        best_outreach_angle: '',
-        one_sentence_hook: '',
-        loom_talking_points: [],
-        audit_relevance: '',
-        needs_human_review: true,
-        error: 'parse_failure',
-        raw_preview: raw.slice(0, 300),
-      };
+    if (prospect_id && writeback && !analysis.error) {
+      await writeAnalysisToProspect(env, prospect_id, analysis, '[Screenshot analysis');
     }
 
-    // Echo input values if the model omitted them
-    if (!parsed.business_name && business_name) parsed.business_name = business_name;
-    if (!parsed.website_url && website_url) parsed.website_url = website_url;
+    return { ok: true, analysis };
+  },
 
-    if (prospect_id && writeback && !parsed.error) {
-      try {
-        const lines = [];
-        lines.push(`[Screenshot analysis ${new Date().toISOString()}]`);
-        lines.push(`Overall leak score: ${parsed.overall_leak_score}/5`);
-        if (parsed.one_sentence_hook) lines.push(`Hook: ${parsed.one_sentence_hook}`);
-        if (parsed.best_outreach_angle) lines.push(`Outreach angle: ${parsed.best_outreach_angle}`);
-        if (Array.isArray(parsed.visible_leaks) && parsed.visible_leaks.length) {
-          lines.push(`\nVisible leaks (${parsed.visible_leaks.length}):`);
-          for (const l of parsed.visible_leaks) {
-            lines.push(`  - [${l.category} s${l.severity}] ${l.leak}`);
-          }
-        }
-        lines.push(`\n--- Full analysis ---\n${JSON.stringify(parsed, null, 2)}`);
-        await at.updateProspect(env, prospect_id, { notes: lines.join('\n') });
-      } catch (e) {
-        console.error('Screenshot analysis writeback failed', e);
-      }
+  'POST /analyze-from-url': async (request, env) => {
+    const body = await request.json();
+    const { url, prospect_id, business_name, writeback, full_page, viewport_width, viewport_height } = body;
+    if (!url) throw new Error('url is required');
+
+    // 1. Capture screenshot from the URL
+    const capture = await captureScreenshot(env, {
+      url,
+      fullPage: full_page === true,
+      viewportWidth: viewport_width || 1280,
+      viewportHeight: viewport_height || 800,
+    });
+
+    // 2. Analyze the captured screenshot
+    const analysis = await analyzeScreenshotInternal(env, {
+      imageBase64: capture.image_base64,
+      business_name,
+      website_url: url,
+    });
+
+    if (prospect_id && writeback && !analysis.error) {
+      await writeAnalysisToProspect(env, prospect_id, analysis, `[Auto-analyzed from URL ${url}`);
     }
 
-    return { ok: true, analysis: parsed };
+    return {
+      ok: true,
+      capture: {
+        captured_at: capture.captured_at,
+        provider: capture.provider,
+        bytes: capture.bytes,
+        content_type: capture.content_type,
+      },
+      analysis,
+    };
   },
 
   'POST /draft-outreach': async (request, env) => {

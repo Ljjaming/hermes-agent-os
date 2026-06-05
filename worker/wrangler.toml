@@ -17,11 +17,19 @@ AIRTABLE_BASE_ID = "appfDgZUsKq430sjD"
 VISION_ENDPOINT = "https://openrouter.ai/api/v1"
 VISION_MODEL = "anthropic/claude-haiku-4-5"
 
+# Screenshot capture provider config. Used by /screenshot-capture and /analyze-from-url.
+# Options:
+#   "screenshotone" — default, 100 free/mo at https://screenshotone.com
+#   "urlbox"        — alternative, similar API
+#   "cf-browser"    — Cloudflare Browser Rendering (TODO, requires Workers Paid + binding)
+SCREENSHOT_PROVIDER = "screenshotone"
+
 # Secrets are NOT stored in this file. Set them via:
 #   wrangler secret put LLM_API_KEY
 #   wrangler secret put AIRTABLE_TOKEN
 #   wrangler secret put SHARED_SECRET
-#   wrangler secret put VISION_API_KEY     # optional; defaults to LLM_API_KEY if unset
+#   wrangler secret put VISION_API_KEY        # optional; defaults to LLM_API_KEY if unset
+#   wrangler secret put SCREENSHOT_API_KEY    # required for /screenshot-capture and /analyze-from-url
 #
 # Or via the Cloudflare dashboard:
 #   Workers & Pages → hermes-agent-runtime → Settings → Variables → Encrypted
