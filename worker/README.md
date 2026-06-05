@@ -7,9 +7,11 @@ The backend that lets agents run while your browser is closed. Make.com triggers
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/health` | GET | Heartbeat. No auth required. |
-| `/draft-hook` | POST | Diagnostician produces a one-sentence Hook for a prospect, writes to `Prospects.hook`. |
+| `/inspect-site` | POST | Site Inspector: fetches URL, returns tech stack + CTAs + pricing + booking flow + trust signals + leak candidates. |
+| `/draft-hook` | POST | Diagnostician produces a one-sentence Hook for a prospect, writes to `Prospects.hook`. Auto-inspects site if `website_url` given without `public_notes`. |
 | `/draft-outreach` | POST | Outreach produces an outreach message, writes to `Prospects.outreach_draft`, creates pending `ApprovalQueue` item. |
-| `/draft-audit` | POST | Auditor produces full audit deliverable, creates `Audits` row + `ApprovalQueue` item. |
+| `/distill-transcript` | POST | Transcript Distiller: extracts objections, buying signals, commitments, self-reported leaks, contradictions as structured JSON. |
+| `/draft-audit` | POST | Auditor produces full audit deliverable, creates `Audits` row + `ApprovalQueue` item. Accepts `transcript` (raw) or `distilled_transcript` (structured). |
 | `/classify-reply` | POST | Inbox classifies inbound reply, updates `Conversations` and `Prospects`, creates `ApprovalQueue` review item. |
 
 All POST endpoints require header `X-Hermes-Secret: <your-shared-secret>`.

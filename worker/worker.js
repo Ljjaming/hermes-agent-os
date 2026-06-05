@@ -33,6 +33,47 @@ const AGENT_PROMPTS = {
   auditor: `You are the Auditor. Produce a 70% complete draft of the Revenue Leak Audit deliverable from the inputs you receive. Use the standard structure: Five-Gap Scorecard, Biggest Operational Leak, Dollar Estimate (with math shown), Diagnosis (one paragraph), 30-Day Action Plan (Week 1, Week 2, Week 3-4 with owner/tool/verification), Recommended Automations (trigger-condition-action, max 5, ranked), Next Move (one sentence). Mark guesses with [REVIEW]. Mark missing-data sections with "INSUFFICIENT DATA: [what would unblock]." Show your math on dollar estimates. Do not produce generic recommendations. Do not pad.\n${VOICE_RULES}`,
 
   inbox: `You classify inbound replies into exactly one of: interested, objection, deferral, refusal, ghost. Output JSON: {"classification": "<category>", "confidence": "<low|medium|high>", "reasoning": "<one sentence>", "suggested_response_intent": "<one sentence on what kind of reply makes sense, NOT the reply itself>"}. Be skeptical of soft-positive language that lacks a concrete next step.\n${VOICE_RULES}`,
+
+  distiller: `You are the Transcript Distiller. Your only job is to extract five categories of insight from a sales call transcript. You produce STRUCTURED JSON, nothing else. No preamble, no summary, no commentary outside the JSON.
+
+OUTPUT SHAPE (return exactly this structure, all keys required, arrays may be empty):
+
+{
+  "objections": [
+    { "ts": "<timestamp as found in transcript, or empty string>", "quote": "<verbatim words>", "category": "time|budget|trust|fit|authority|other" }
+  ],
+  "buying_signals": [
+    { "ts": "...", "quote": "<verbatim>", "strength": "low|medium|high" }
+  ],
+  "commitments": [
+    { "by": "operator|user|justin", "ts": "...", "commitment": "<specific action with a verb>" }
+  ],
+  "self_reported_leaks": [
+    { "ts": "...", "leak": "<what the operator named as a leak>", "verifiable_from_call": true }
+  ],
+  "contradictions": [
+    { "ts": "...", "operator_claim": "<what they said>", "evidence_against": "<what was said or implied later that contradicts it>" }
+  ]
+}
+
+DEFINITIONS:
+- Objection: anything that resists the next step. Example: "I'm not sure I have time," "We just rebuilt this last year," "I need to talk to my partner."
+- Buying signal: anything that names urgency, pain, or willingness to pay. Example: "If we could fix the booking thing, that's probably worth $5k." Mark "low" if hedged or speculative.
+- Commitment: specific action with a verb attached to a person. "I'll send you the Stripe export by Friday." NOT "I'll think about it."
+- Self-reported leak: the operator naming where they think they're losing time or revenue. Include even if you doubt it.
+- Contradiction: when the operator's stated process and described behavior diverge. Example: claims "we follow up within an hour" then later mentions "most leads ignore the second email a week later."
+
+RULES:
+- Output ONLY valid JSON. No markdown code fences. No commentary.
+- Quote verbatim, do not paraphrase.
+- Use empty string "" for ts when no timestamp present.
+- An empty array is the correct answer when nothing in that category exists.
+- Skepticism is appropriate. Soft positive ("yeah maybe, sounds interesting") is not a buying signal at strength medium or high.
+
+If the transcript is empty or unparseable, return:
+{ "objections": [], "buying_signals": [], "commitments": [], "self_reported_leaks": [], "contradictions": [], "error": "transcript unparseable" }
+
+${VOICE_RULES}`,
 };
 
 // ---------- Site Inspector ----------
@@ -396,11 +437,51 @@ HOOK (lead with this observation): ${hook}`;
     return { ok: true, draft };
   },
 
+  'POST /distill-transcript': async (request, env) => {
+    const body = await request.json();
+    const { prospect_id, transcript } = body;
+    if (!transcript || typeof transcript !== 'string' || transcript.trim().length < 20) {
+      throw new Error('transcript is required (min 20 characters)');
+    }
+
+    const userContent = `TRANSCRIPT:\n${transcript}`;
+    const raw = await llmChat(env, AGENT_PROMPTS.distiller, userContent);
+
+    let parsed;
+    try {
+      const match = raw.match(/\{[\s\S]*\}/);
+      parsed = JSON.parse(match ? match[0] : raw);
+    } catch {
+      parsed = {
+        objections: [], buying_signals: [], commitments: [],
+        self_reported_leaks: [], contradictions: [],
+        error: 'parse_failure', raw_preview: raw.slice(0, 300),
+      };
+    }
+
+    if (prospect_id && !parsed.error) {
+      try {
+        const counts = `obj:${parsed.objections?.length || 0} sig:${parsed.buying_signals?.length || 0} com:${parsed.commitments?.length || 0} leak:${parsed.self_reported_leaks?.length || 0} contra:${parsed.contradictions?.length || 0}`;
+        await at.updateProspect(env, prospect_id, {
+          notes: `[Distilled transcript ${new Date().toISOString()}] ${counts}\n\n${JSON.stringify(parsed, null, 2)}`,
+        });
+      } catch (e) {
+        console.error('Failed to write distilled transcript to Prospect', e);
+      }
+    }
+
+    return { ok: true, distilled: parsed };
+  },
+
   'POST /draft-audit': async (request, env) => {
     const body = await request.json();
-    const { prospect_id, business_name, intake, transcript, screen_notes } = body;
+    const { prospect_id, business_name, intake, transcript, distilled_transcript, screen_notes } = body;
     const parts = [`INTAKE:\n${intake || 'none provided'}`];
-    if (transcript) parts.push(`\nTRANSCRIPT:\n${transcript}`);
+    if (distilled_transcript) {
+      parts.push(`\nTRANSCRIPT (distilled structured form):\n${typeof distilled_transcript === 'string' ? distilled_transcript : JSON.stringify(distilled_transcript, null, 2)}`);
+    } else if (transcript) {
+      parts.push(`\nTRANSCRIPT (raw):\n${transcript}`);
+    }
     if (screen_notes) parts.push(`\nSCREEN_NOTES:\n${screen_notes}`);
     const userContent = parts.join('\n');
 
