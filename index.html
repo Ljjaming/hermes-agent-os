@@ -44,6 +44,10 @@
         <button class="tab active" data-view="chat" role="tab">
           <span class="tab-dot"></span>Chat
         </button>
+        <button class="tab" data-view="queue" role="tab">
+          <span class="tab-dot"></span>Queue
+          <span class="tab-badge" id="queueBadge" hidden>0</span>
+        </button>
         <button class="tab" data-view="network" role="tab">
           <span class="tab-dot"></span>Network
         </button>
@@ -130,6 +134,28 @@
         </footer>
       </section>
 
+      <!-- Queue View -->
+      <section class="view view-queue" data-view="queue">
+        <header class="view-header">
+          <div class="view-title">Approval Queue</div>
+          <div class="view-subtitle">Pending decisions across outreach, audits, replies, and content. Drafts wait here for your one-click approval.</div>
+          <div class="view-actions">
+            <button class="icon-btn" id="refreshQueueBtn" title="Refresh">
+              <svg viewBox="0 0 16 16" width="16" height="16"><path fill="currentColor" d="M8 3a5 5 0 014.546 2.916l1.18-.787A6.5 6.5 0 008 1.5V0L4 2.5 8 5V3zm0 10a5 5 0 01-4.546-2.916l-1.18.787A6.5 6.5 0 008 14.5V16l4-2.5L8 11v2z"/></svg>
+            </button>
+          </div>
+        </header>
+        <div class="queue-filters" id="queueFilters">
+          <button class="filter-pill active" data-filter="all">All</button>
+          <button class="filter-pill" data-filter="outreach_send">Outreach</button>
+          <button class="filter-pill" data-filter="audit_deliverable">Audits</button>
+          <button class="filter-pill" data-filter="reply_send">Reply</button>
+          <button class="filter-pill" data-filter="reply_classification">Inbox</button>
+          <button class="filter-pill" data-filter="content_post">Content</button>
+        </div>
+        <div class="queue-list" id="queueList"></div>
+      </section>
+
       <!-- Network View -->
       <section class="view view-network" data-view="network">
         <header class="view-header">
@@ -202,6 +228,20 @@
               <button id="saveSettingsBtn" class="btn btn-primary">Save Settings</button>
             </div>
             <div id="settingsStatus" class="settings-status"></div>
+          </fieldset>
+
+          <fieldset class="settings-group">
+            <legend>Airtable</legend>
+            <label class="field">
+              <span class="field-label">Personal Access Token</span>
+              <input type="password" id="settingAirtablePat" placeholder="patXXXX..." autocomplete="off">
+              <span class="field-hint">Get one at airtable.com/create/tokens. Needs data.records:read and data.records:write scopes on your Revenue Leak Pipeline base.</span>
+            </label>
+            <label class="field">
+              <span class="field-label">Base ID</span>
+              <input type="text" id="settingAirtableBaseId" placeholder="appXXXX..." autocomplete="off">
+              <span class="field-hint">From your Airtable URL: airtable.com/<strong>appXXXX</strong>/...</span>
+            </label>
           </fieldset>
 
           <fieldset class="settings-group">

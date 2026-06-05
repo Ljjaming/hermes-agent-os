@@ -3,6 +3,7 @@ import { initAgents, getAgents, getAgent, addAgent } from './agents.js';
 import { onRender, selectChannel, sendMessage, clearActiveConversation, getActiveChannelMeta } from './chat.js';
 import { renderNetwork, resetPulseCounter } from './network.js';
 import { wireSettings, renderAgentEditor, loadSettingsToForm, onSettingsChange } from './settings.js';
+import { loadQueue, wireQueueUI, startQueuePolling } from './queue.js';
 
 initAgents();
 
@@ -36,6 +37,7 @@ function switchView(view) {
   $$('.view').forEach((v) => v.classList.toggle('active', v.dataset.view === view));
   if (view === 'network') renderNetwork();
   if (view === 'logs') renderLogs();
+  if (view === 'queue') loadQueue();
   if (view === 'settings') {
     loadSettingsToForm();
     renderAgentEditor();
@@ -302,6 +304,11 @@ spot();
 // Settings
 wireSettings();
 renderAgentEditor();
+
+// Queue
+wireQueueUI();
+startQueuePolling();
+loadQueue();
 
 // Initial render
 rerender();

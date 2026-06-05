@@ -25,6 +25,8 @@ export function loadSettingsToForm() {
     $('settingTemp').value = String(s.temperature ?? 0.7);
     $('tempValue').textContent = String(s.temperature ?? 0.7);
   }
+  if ($('settingAirtablePat')) $('settingAirtablePat').value = s.airtable_pat || '';
+  if ($('settingAirtableBaseId')) $('settingAirtableBaseId').value = s.airtable_base_id || '';
 }
 
 export function wireSettings() {
@@ -40,6 +42,8 @@ export function wireSettings() {
       apiKey: $('settingApiKey').value.trim(),
       model: $('settingModel').value.trim(),
       temperature: parseFloat($('settingTemp').value),
+      airtable_pat: $('settingAirtablePat')?.value.trim() || '',
+      airtable_base_id: $('settingAirtableBaseId')?.value.trim() || '',
     });
     setStatus('Saved. Settings persist in this browser only.', 'success');
     emit();
@@ -51,6 +55,8 @@ export function wireSettings() {
       apiKey: $('settingApiKey').value.trim(),
       model: $('settingModel').value.trim(),
       temperature: parseFloat($('settingTemp').value),
+      airtable_pat: $('settingAirtablePat')?.value.trim() || '',
+      airtable_base_id: $('settingAirtableBaseId')?.value.trim() || '',
     });
     setStatus('Testing...', 'success');
     try {

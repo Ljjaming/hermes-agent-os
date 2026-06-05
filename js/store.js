@@ -10,6 +10,8 @@ const DEFAULT_STATE = {
     apiKey: '',
     model: '',
     temperature: 0.7,
+    airtable_pat: '',
+    airtable_base_id: '',
   },
   activeChannel: 'broadcast',
 };
