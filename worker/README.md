@@ -9,9 +9,10 @@ The backend that lets agents run while your browser is closed. Make.com triggers
 | `/health` | GET | Heartbeat. No auth required. |
 | `/inspect-site` | POST | Site Inspector: fetches URL, returns tech stack + CTAs + pricing + booking flow + trust signals + leak candidates. |
 | `/draft-hook` | POST | Diagnostician produces a one-sentence Hook for a prospect, writes to `Prospects.hook`. Auto-inspects site if `website_url` given without `public_notes`. |
-| `/draft-outreach` | POST | Outreach produces an outreach message, writes to `Prospects.outreach_draft`, creates pending `ApprovalQueue` item. |
+| `/analyze-screenshot` | POST | Screenshot Analyzer: vision model identifies visible revenue leaks (CTA, trust, mobile, offer, booking, intake, clarity, friction, follow-up, design). Returns ranked leaks + outreach hook + Loom talking points. |
+| `/draft-outreach` | POST | Outreach produces an outreach message, writes to `Prospects.outreach_draft`, creates pending `ApprovalQueue` item. Optionally accepts `screenshot_analysis` to sharpen the hook. |
 | `/distill-transcript` | POST | Transcript Distiller: extracts objections, buying signals, commitments, self-reported leaks, contradictions as structured JSON. |
-| `/draft-audit` | POST | Auditor produces full audit deliverable, creates `Audits` row + `ApprovalQueue` item. Accepts `transcript` (raw) or `distilled_transcript` (structured). |
+| `/draft-audit` | POST | Auditor produces full audit deliverable, creates `Audits` row + `ApprovalQueue` item. Accepts `transcript` (raw) or `distilled_transcript` (structured), and optional `screenshot_analysis`. |
 | `/render-audit` | POST | Renders Auditor text output as branded HTML deliverable (light theme, A4-print-optimized). Returns HTML in JSON by default, or raw HTML if `format: "html"` is sent. Pipe through PDFShift or browser print, upload to Google Drive. |
 | `/classify-reply` | POST | Inbox classifies inbound reply, updates `Conversations` and `Prospects`, creates `ApprovalQueue` review item. |
 
@@ -52,6 +53,9 @@ wrangler secret put SHARED_SECRET
 # paste any random long string. Generate one with:
 #   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 # Save this string. Make.com needs it on every webhook call.
+
+# Optional: only if your vision provider uses a different key than your text LLM.
+# wrangler secret put VISION_API_KEY
 ```
 
 ### 4. Deploy

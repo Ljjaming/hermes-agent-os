@@ -34,6 +34,68 @@ const AGENT_PROMPTS = {
 
   inbox: `You classify inbound replies into exactly one of: interested, objection, deferral, refusal, ghost. Output JSON: {"classification": "<category>", "confidence": "<low|medium|high>", "reasoning": "<one sentence>", "suggested_response_intent": "<one sentence on what kind of reply makes sense, NOT the reply itself>"}. Be skeptical of soft-positive language that lacks a concrete next step.\n${VOICE_RULES}`,
 
+  screenshot_analyzer: `You are the Screenshot Analyzer. You receive a screenshot of a business website and return STRUCTURED JSON identifying visible revenue leaks. Your output feeds outreach drafting and the paid Revenue Leak Audit.
+
+YOU FOCUS ON visible conversion leaks, not generic design criticism. The buyer is a small business owner. Output must be actionable, defensible from what you actually see, and useful for sales outreach.
+
+CATEGORIES (each leak must fit exactly one):
+- cta: button copy, placement, count, visual weight
+- trust: missing testimonials, badges, case studies, logos, real photos
+- mobile: layout broken, tap targets too small, mobile-specific friction
+- offer: unclear price, unclear what is being sold, hidden pricing
+- booking: scheduling friction, deep booking flow, no calendar visible
+- intake: form too long, mandatory fields, no progress indicator
+- clarity: confusing headline, unclear hero, missing value prop
+- friction: paywall before value, gated content, required signup before benefit
+- follow_up: no email capture, no lead magnet, single CTA loses non-buyers
+- design: only flag if directly affecting conversion (broken layout, illegible text)
+
+OUTPUT STRICT JSON (no preamble, no markdown fences, no commentary outside the JSON object):
+
+{
+  "business_name": "<echo from input or extract from screenshot>",
+  "website_url": "<echo from input>",
+  "overall_leak_score": 1-5,
+  "visual_summary": "<2-sentence description of what is on screen>",
+  "visible_leaks": [
+    {
+      "leak": "<one-line specific leak>",
+      "category": "<one of the categories above>",
+      "severity": 1-5,
+      "evidence": "<what you literally see in the screenshot>",
+      "why_it_matters": "<one sentence on revenue impact>",
+      "suggested_fix": "<one sentence specific fix>"
+    }
+  ],
+  "best_outreach_angle": "<one sentence on which leak to lead with in cold outreach>",
+  "one_sentence_hook": "<a hook ready to drop into cold outreach, anchored to the most visible leak>",
+  "loom_talking_points": ["<point 1>", "<point 2>", "<point 3>"],
+  "audit_relevance": "<one sentence on what the paid Revenue Leak Audit would surface beyond what is visible>",
+  "needs_human_review": true|false
+}
+
+SEVERITY SCALE:
+- 5: critical visible leak, likely costing 20%+ of conversion
+- 4: high visible leak, likely costing 10-20%
+- 3: moderate, defensible leak
+- 2: minor, worth noting but not a hook
+- 1: nitpick, do not include unless you have nothing else
+
+RULES:
+- Do not invent facts outside the screenshot. If you cannot confirm something, set needs_human_review true and skip that claim.
+- Quote specific visual elements. Example: "button reads 'Get Started'", "form shows 9 fields", "no testimonials in viewport".
+- If the screenshot is blank, unparseable, or an error page, return needs_human_review true with empty leaks array.
+- visible_leaks: max 5. Rank by severity desc. If fewer than 3 are defensible, return what you have.
+- one_sentence_hook must be drop-in-ready for cold outreach. Use Justin's voice.
+- audit_relevance should make the buyer want the paid audit (what is NOT visible from outside).
+
+HARD VOICE CONSTRAINTS apply to all free-text fields:
+- No em dashes. Use commas, parentheses, periods, colons.
+- No emojis.
+- No consultant-speak.
+- No flattery.
+- Specificity beats sophistication.`,
+
   distiller: `You are the Transcript Distiller. Your only job is to extract five categories of insight from a sales call transcript. You produce STRUCTURED JSON, nothing else. No preamble, no summary, no commentary outside the JSON.
 
 OUTPUT SHAPE (return exactly this structure, all keys required, arrays may be empty):
@@ -534,6 +596,61 @@ async function llmChat(env, systemPrompt, userContent) {
   return json.choices?.[0]?.message?.content?.trim() || '';
 }
 
+// ---------- Vision adapter ----------
+// Clean adapter for vision-capable models (OpenAI-compatible chat completions with image_url).
+// Defaults to VISION_* env vars, falls back to LLM_* if vision is unset.
+// TODO: support multiple providers natively:
+//   - OpenRouter (anthropic/claude-haiku-4-5, openai/gpt-4o-mini, etc.) [supported via OpenAI-compatible]
+//   - Anthropic direct API (different content shape: type: "image", source: {...})
+//   - Cloudflare Workers AI (env.AI.run('@cf/llava-hf/llava-1.5-7b-hf', ...)) [different binding]
+async function analyzeImage(env, { imageUrl, imageBase64, prompt, systemPrompt, temperature = 0.3 }) {
+  const endpoint = (env.VISION_ENDPOINT || env.LLM_ENDPOINT || '').replace(/\/$/, '');
+  const apiKey = env.VISION_API_KEY || env.LLM_API_KEY;
+  const model = env.VISION_MODEL || env.LLM_MODEL;
+
+  if (!endpoint) throw new Error('No vision endpoint configured (set VISION_ENDPOINT or LLM_ENDPOINT)');
+  if (!apiKey) throw new Error('No vision API key configured (set VISION_API_KEY or LLM_API_KEY)');
+  if (!model) throw new Error('No vision model configured (set VISION_MODEL or LLM_MODEL)');
+  if (!imageUrl && !imageBase64) throw new Error('Either imageUrl or imageBase64 is required');
+
+  let imagePart;
+  if (imageUrl) {
+    imagePart = { type: 'image_url', image_url: { url: imageUrl } };
+  } else {
+    const dataUrl = imageBase64.startsWith('data:')
+      ? imageBase64
+      : `data:image/png;base64,${imageBase64}`;
+    imagePart = { type: 'image_url', image_url: { url: dataUrl } };
+  }
+
+  const messages = [];
+  if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+  messages.push({
+    role: 'user',
+    content: [
+      { type: 'text', text: prompt },
+      imagePart,
+    ],
+  });
+
+  const res = await fetch(`${endpoint}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ model, temperature, messages }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Vision LLM ${res.status}: ${text.slice(0, 300)}`);
+  }
+
+  const json = await res.json();
+  return json.choices?.[0]?.message?.content?.trim() || '';
+}
+
 // ---------- Airtable client ----------
 async function airtableRequest(env, method, path, body) {
   const url = `https://api.airtable.com/v0/${env.AIRTABLE_BASE_ID}${path}`;
@@ -609,12 +726,96 @@ ${public_notes || 'none provided'}`;
     return { ok: true, hook, inspection_used };
   },
 
+  'POST /analyze-screenshot': async (request, env) => {
+    const body = await request.json();
+    const { prospect_id, business_name, website_url, screenshot_url, image_base64, writeback } = body;
+
+    if (!screenshot_url && !image_base64) {
+      throw new Error('screenshot_url or image_base64 is required');
+    }
+
+    const userPrompt = `BUSINESS_NAME: ${business_name || 'unknown'}
+WEBSITE_URL: ${website_url || 'unknown'}
+
+Analyze the attached screenshot and produce the structured JSON described in your system prompt. Quote what you literally see. Do not invent details outside the image.`;
+
+    const raw = await analyzeImage(env, {
+      imageUrl: screenshot_url,
+      imageBase64: image_base64,
+      prompt: userPrompt,
+      systemPrompt: AGENT_PROMPTS.screenshot_analyzer,
+    });
+
+    let parsed;
+    try {
+      const match = raw.match(/\{[\s\S]*\}/);
+      parsed = JSON.parse(match ? match[0] : raw);
+    } catch {
+      parsed = {
+        business_name: business_name || '',
+        website_url: website_url || '',
+        overall_leak_score: 0,
+        visual_summary: '',
+        visible_leaks: [],
+        best_outreach_angle: '',
+        one_sentence_hook: '',
+        loom_talking_points: [],
+        audit_relevance: '',
+        needs_human_review: true,
+        error: 'parse_failure',
+        raw_preview: raw.slice(0, 300),
+      };
+    }
+
+    // Echo input values if the model omitted them
+    if (!parsed.business_name && business_name) parsed.business_name = business_name;
+    if (!parsed.website_url && website_url) parsed.website_url = website_url;
+
+    if (prospect_id && writeback && !parsed.error) {
+      try {
+        const lines = [];
+        lines.push(`[Screenshot analysis ${new Date().toISOString()}]`);
+        lines.push(`Overall leak score: ${parsed.overall_leak_score}/5`);
+        if (parsed.one_sentence_hook) lines.push(`Hook: ${parsed.one_sentence_hook}`);
+        if (parsed.best_outreach_angle) lines.push(`Outreach angle: ${parsed.best_outreach_angle}`);
+        if (Array.isArray(parsed.visible_leaks) && parsed.visible_leaks.length) {
+          lines.push(`\nVisible leaks (${parsed.visible_leaks.length}):`);
+          for (const l of parsed.visible_leaks) {
+            lines.push(`  - [${l.category} s${l.severity}] ${l.leak}`);
+          }
+        }
+        lines.push(`\n--- Full analysis ---\n${JSON.stringify(parsed, null, 2)}`);
+        await at.updateProspect(env, prospect_id, { notes: lines.join('\n') });
+      } catch (e) {
+        console.error('Screenshot analysis writeback failed', e);
+      }
+    }
+
+    return { ok: true, analysis: parsed };
+  },
+
   'POST /draft-outreach': async (request, env) => {
     const body = await request.json();
-    const { prospect_id, business_name, hook, recipient_first_name } = body;
+    const { prospect_id, business_name, hook, recipient_first_name, screenshot_analysis } = body;
+
+    // Augment hook with screenshot analysis when provided. screenshot_analysis can be
+    // the full /analyze-screenshot response (object) or a pre-formatted string.
+    let augmentedContext = '';
+    if (screenshot_analysis) {
+      if (typeof screenshot_analysis === 'string') {
+        augmentedContext = `\n\nSCREENSHOT ANALYSIS:\n${screenshot_analysis}`;
+      } else {
+        const s = screenshot_analysis;
+        const leakLines = (s.visible_leaks || [])
+          .map((l) => `  - [${l.category} s${l.severity}] ${l.leak} (evidence: ${l.evidence})`)
+          .join('\n');
+        augmentedContext = `\n\nSCREENSHOT ANALYSIS:\nOverall leak score: ${s.overall_leak_score || 'n/a'}/5\nBest outreach angle: ${s.best_outreach_angle || 'n/a'}\nVisible leaks:\n${leakLines || '  (none)'}\nSuggested hook: ${s.one_sentence_hook || 'n/a'}`;
+      }
+    }
+
     const userContent = `RECIPIENT: ${recipient_first_name || 'there'}
 BUSINESS_NAME: ${business_name}
-HOOK (lead with this observation): ${hook}`;
+HOOK (lead with this observation): ${hook || (typeof screenshot_analysis === 'object' && screenshot_analysis?.one_sentence_hook) || ''}${augmentedContext}`;
     const draft = await llmChat(env, AGENT_PROMPTS.outreach, userContent);
 
     if (prospect_id) {
@@ -674,14 +875,17 @@ HOOK (lead with this observation): ${hook}`;
 
   'POST /draft-audit': async (request, env) => {
     const body = await request.json();
-    const { prospect_id, business_name, intake, transcript, distilled_transcript, screen_notes } = body;
+    const { prospect_id, business_name, intake, transcript, distilled_transcript, screen_notes, screenshot_analysis } = body;
     const parts = [`INTAKE:\n${intake || 'none provided'}`];
     if (distilled_transcript) {
       parts.push(`\nTRANSCRIPT (distilled structured form):\n${typeof distilled_transcript === 'string' ? distilled_transcript : JSON.stringify(distilled_transcript, null, 2)}`);
     } else if (transcript) {
       parts.push(`\nTRANSCRIPT (raw):\n${transcript}`);
     }
-    if (screen_notes) parts.push(`\nSCREEN_NOTES:\n${screen_notes}`);
+    if (screen_notes) parts.push(`\nSCREEN_NOTES (operator-provided):\n${screen_notes}`);
+    if (screenshot_analysis) {
+      parts.push(`\nSCREENSHOT_ANALYSIS (visible leaks from prospect's site):\n${typeof screenshot_analysis === 'string' ? screenshot_analysis : JSON.stringify(screenshot_analysis, null, 2)}`);
+    }
     const userContent = parts.join('\n');
 
     const draft = await llmChat(env, AGENT_PROMPTS.auditor, userContent);

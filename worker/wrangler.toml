@@ -9,10 +9,19 @@ LLM_ENDPOINT = "https://openrouter.ai/api/v1"
 LLM_MODEL = "nousresearch/hermes-3-llama-3.1-405b"
 AIRTABLE_BASE_ID = "appfDgZUsKq430sjD"
 
+# Vision model config. Used by /analyze-screenshot.
+# If unset, vision endpoints fall back to LLM_ENDPOINT/LLM_API_KEY/LLM_MODEL,
+# which will fail unless your LLM_MODEL is itself vision-capable (Hermes 3 is not).
+# Recommended (cheap, accurate): "anthropic/claude-haiku-4-5" via OpenRouter.
+# Alternatives: "openai/gpt-4o-mini", "google/gemini-2.0-flash-lite-001".
+VISION_ENDPOINT = "https://openrouter.ai/api/v1"
+VISION_MODEL = "anthropic/claude-haiku-4-5"
+
 # Secrets are NOT stored in this file. Set them via:
 #   wrangler secret put LLM_API_KEY
 #   wrangler secret put AIRTABLE_TOKEN
 #   wrangler secret put SHARED_SECRET
+#   wrangler secret put VISION_API_KEY     # optional; defaults to LLM_API_KEY if unset
 #
 # Or via the Cloudflare dashboard:
 #   Workers & Pages → hermes-agent-runtime → Settings → Variables → Encrypted
