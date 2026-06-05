@@ -1,14 +1,16 @@
 # Refund Policy — Revenue Leak Audit
 
-Any time. For any reason. No questions, no forms, no win-back call.
+180 days. Any reason. Same business day.
 
-Reply to my email saying "refund please" and I process it the same business day. There is no time limit. If you bought this audit in 2026 and decide in 2030 it was not worth it, that is a valid refund.
+Reply to my email saying "refund please" and I process it the same business day. No questions, no forms, no win-back call.
 
-Stripe limits direct refunds to 180 days from purchase. Past that window, I issue refunds via PayPal, Wise, or check. The mechanism changes. The policy does not.
+180 days from purchase is the Stripe refund window. Inside it, refunds are unconditional. Outside it, I cannot reverse the charge, because Stripe is the only payment processor in use.
 
-## Why this policy exists
+## Why 180 days
 
-You are buying a diagnosis. If the diagnosis does not produce clarity or value for your business, you should get your money back. That should not be controversial.
+You are buying a diagnosis. If the diagnosis does not produce clarity or value within 180 days of purchase, you should get your money back. That should not be controversial.
+
+180 days is also the window in which a buyer can realistically test whether the diagnosis produced value. Beyond it, attribution to the audit becomes unreliable on both sides.
 
 ## What this policy is not
 

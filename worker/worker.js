@@ -535,7 +535,7 @@ const AUDIT_HTML_TEMPLATE = `<!DOCTYPE html>
 
   <div class="refund-block">
     <h3>Refund policy</h3>
-    <p>Any time. For any reason. No questions, no forms. Reply to my email saying "refund please" and I process it the same business day. There is no time limit.</p>
+    <p>180 days from purchase. Any reason. Same business day. Reply to my email saying "refund please" and I process it. No questions, no forms. Stripe is the processor and 180 days is the refund window.</p>
   </div>
 
   <footer class="audit-footer">
